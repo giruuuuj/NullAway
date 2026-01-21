@@ -30,6 +30,7 @@ import com.google.errorprone.VisitorState;
 import com.google.errorprone.util.ASTHelpers;
 import com.sun.source.tree.MethodTree;
 import com.sun.source.tree.ReturnTree;
+import com.sun.source.tree.Tree;
 import com.sun.source.util.TreePath;
 import com.sun.source.util.TreePathScanner;
 import com.sun.tools.javac.code.Symbol;
@@ -149,6 +150,13 @@ public class ContractCheckHandler implements Handler {
 
           if (nullness == Nullness.NULLABLE || nullness == Nullness.NULL) {
 
+            // Check if this return statement is reachable when antecedent conditions are met
+            if (!isReturnReachableUnderAntecedentConditions(returnTree, returnState, antecedent, tree)) {
+              // This return statement is not reachable when the antecedent conditions are true,
+              // so it doesn't violate the contract
+              return super.visitReturn(returnTree, null);
+            }
+
             String errorMessage;
 
             // used for error message
@@ -199,5 +207,148 @@ public class ContractCheckHandler implements Handler {
         }
       }.scan(state.getPath(), null);
     }
+  }
+
+  /**
+   * Checks if a return statement is reachable when the antecedent conditions are met.
+   * 
+   * <p>This is a simplified implementation that checks if the return statement is inside
+   * a conditional block that checks for parameter being null. If so, it assumes the return
+   * is not reachable when the parameter is non-null.
+   * 
+   * @param returnTree the return statement to check
+   * @param state the visitor state
+   * @param antecedent the antecedent conditions from the contract
+   * @param methodTree the method tree
+   * @return true if the return statement is reachable when antecedent conditions are true
+   */
+  private boolean isReturnReachableUnderAntecedentConditions(
+      ReturnTree returnTree,
+      VisitorState state,
+      String[] antecedent,
+      MethodTree methodTree) {
+    
+    // For each antecedent condition, check if the return statement is reachable when it's true
+    for (int i = 0; i < antecedent.length; i++) {
+      String valueConstraint = antecedent[i].trim();
+      
+      if (valueConstraint.equals("!null")) {
+        // Check if this return statement is reachable when the parameter is non-null
+        if (!isReturnReachableWhenParamIsNonNull(returnTree, state, methodTree, i)) {
+          return false;
+        }
+      }
+      // We could add more checks for other constraints like "null", "true", "false" in the future
+    }
+    
+    return true;
+  }
+
+  /**
+   * Checks if a return statement is reachable when the specified parameter is non-null.
+   * 
+   * <p>This uses a simple heuristic: if the return statement is inside an if block
+   * that checks "param == null", then we assume it's not reachable when param is non-null.
+   * 
+   * @param returnTree the return statement to check
+   * @param state the visitor state
+   * @param methodTree the method tree
+   * @param paramIndex the index of the parameter to check
+   * @return true if the return statement is reachable when the parameter is non-null
+   */
+  private boolean isReturnReachableWhenParamIsNonNull(
+      ReturnTree returnTree,
+      VisitorState state,
+      MethodTree methodTree,
+      int paramIndex) {
+    
+    // Get the parameter symbol
+    if (paramIndex >= methodTree.getParameters().size()) {
+      return true; // Invalid parameter index, assume reachable
+    }
+    
+    var paramSymbol = ASTHelpers.getSymbol(methodTree.getParameters().get(paramIndex));
+    if (paramSymbol == null) {
+      return true; // Cannot get parameter symbol, assume reachable
+    }
+    
+    // Walk up the AST to find if we're inside a conditional that checks for null
+    TreePath currentPath = state.getPath();
+    while (currentPath != null && currentPath.getLeaf() != returnTree) {
+      Tree currentTree = currentPath.getLeaf();
+      
+      // Check if we're inside an if statement that checks for parameter being null
+      if (currentTree instanceof com.sun.source.tree.IfTree ifTree) {
+        
+        // Check if the condition involves checking if the parameter is null
+        if (isConditionCheckingParamNull(ifTree.getCondition(), paramSymbol)) {
+          // Check if this return statement is in the "then" branch (when param is null)
+          if (isReturnInThenBranch(ifTree, returnTree, currentPath)) {
+            return false; // Return is only reachable when param is null
+          }
+        }
+      }
+      
+      currentPath = currentPath.getParentPath();
+    }
+    
+    return true; // Assume reachable if we can't prove otherwise
+  }
+
+  /**
+   * Checks if a condition expression checks if the given parameter is null.
+   */
+  private boolean isConditionCheckingParamNull(
+      com.sun.source.tree.ExpressionTree condition,
+      Symbol paramSymbol) {
+    
+    // Simple check for patterns like "param == null" or "null == param"
+    String conditionStr = condition.toString().trim();
+    String paramName = paramSymbol.name.toString();
+    
+    // Check for param == null or null == param patterns
+    return (conditionStr.equals(paramName + " == null") || 
+            conditionStr.equals("null == " + paramName) ||
+            conditionStr.equals(paramName + "!=null") ||
+            conditionStr.equals("null!=" + paramName));
+  }
+
+  /**
+   * Checks if the return statement is in the "then" branch of an if statement.
+   */
+  private boolean isReturnInThenBranch(
+      com.sun.source.tree.IfTree ifTree,
+      ReturnTree returnTree,
+      TreePath currentPath) {
+    
+    // Check if the return tree is in the then branch
+    TreePath thenPath = new TreePath(currentPath, ifTree.getThenStatement());
+    return isTreeInPath(thenPath, returnTree);
+  }
+
+  /**
+   * Checks if a specific tree is contained within a path.
+   */
+  private boolean isTreeInPath(TreePath path, Tree targetTree) {
+    if (path == null) {
+      return false;
+    }
+    
+    if (path.getLeaf() == targetTree) {
+      return true;
+    }
+    
+    // Use a simple scanner to check all trees in the path
+    TreePathScanner<java.lang.Boolean, @Nullable Void> scanner = new TreePathScanner<java.lang.Boolean, @Nullable Void>() {
+      @Override
+      public java.lang.Boolean scan(Tree tree, @Nullable Void p) {
+        if (tree == targetTree) {
+          return true;
+        }
+        return super.scan(tree, null);
+      }
+    };
+    
+    return scanner.scan(path.getLeaf(), null);
   }
 }
