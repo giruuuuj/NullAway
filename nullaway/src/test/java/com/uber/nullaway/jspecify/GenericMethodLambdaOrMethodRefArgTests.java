@@ -378,7 +378,6 @@ public class GenericMethodLambdaOrMethodRefArgTests extends NullAwayTestsBase {
         .doTest();
   }
 
-  @Ignore("https://github.com/uber/NullAway/issues/1431")
   @Test
   public void inferFromMethodRef() {
     makeHelperWithInferenceFailureWarning()
