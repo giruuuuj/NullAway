@@ -26,6 +26,7 @@ import com.sun.source.tree.ParameterizedTypeTree;
 import com.sun.source.tree.ParenthesizedTree;
 import com.sun.source.tree.ReturnTree;
 import com.sun.source.tree.Tree;
+import com.sun.source.tree.TreeVisitor;
 import com.sun.source.tree.VariableTree;
 import com.sun.source.util.TreePath;
 import com.sun.source.util.TreeScanner;
@@ -845,8 +846,8 @@ public final class GenericsChecks {
       ExpressionTree rhsExpr,
       Type lhsType) {
     rhsExpr = ASTHelpers.stripParentheses(rhsExpr);
-    if (rhsExpr instanceof MemberReferenceTree) {
-      // TODO generate constraints from method reference argument types
+    if (rhsExpr instanceof MemberReferenceTree methodRef) {
+      handleMethodReferenceInGenericMethodInference(state, solver, lhsType, methodRef);
       return;
     }
     // if the parameter is itself a generic call requiring inference, generate constraints for
@@ -919,6 +920,45 @@ public final class GenericsChecks {
             state, lambdaPath, solver, allInvocations, returnExpr, fiReturnType);
       }
     }
+  }
+
+  /**
+   * Generate constraints for method reference argument in generic method inference. 
+   * This is analogous to handleLambdaInGenericMethodInference but for method references.
+   *
+   * @param state the visitor state
+   * @param solver the constraint solver
+   * @param lhsType the type to which the method reference is being assigned
+   * @param methodRef the method reference argument
+   */
+  private void handleMethodReferenceInGenericMethodInference(
+      VisitorState state,
+      ConstraintSolver solver,
+      Type lhsType,
+      MemberReferenceTree methodRef) {
+    Symbol.MethodSymbol fiMethod =
+        NullabilityUtil.getFunctionalInterfaceMethod(methodRef, state.getTypes());
+
+    // get the return type of the functional interface method, viewed as a member of the lhs
+    // type, so the generic method's type variables are substituted in
+    Type.MethodType fiMethodTypeAsMember =
+        TypeSubstitutionUtils.memberType(state.getTypes(), lhsType, fiMethod, config)
+            .asMethodType();
+    Type fiReturnType = fiMethodTypeAsMember.getReturnType();
+
+    // Get the referenced method symbol
+    Symbol.MethodSymbol referencedMethod = ASTHelpers.getSymbol(methodRef);
+    if (referencedMethod == null) {
+      return;
+    }
+
+    // Get the return type of the referenced method
+    Type referencedMethodReturnType = referencedMethod.getReturnType();
+    
+    // Generate constraint: referenced method return type <: functional interface return type
+    // This ensures that the nullability of the referenced method's return type is properly
+    // considered during type variable inference
+    solver.addSubtypeConstraint(referencedMethodReturnType, fiReturnType, false);
   }
 
   /**
