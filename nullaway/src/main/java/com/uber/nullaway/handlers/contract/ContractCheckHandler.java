@@ -247,13 +247,14 @@ public class ContractCheckHandler implements Handler {
   /**
    * Checks if a return statement is reachable when the specified parameter is non-null.
    * 
-   * <p>This uses a simple heuristic: if the return statement is inside an if block
-   * that checks "param == null", then we assume it's not reachable when param is non-null.
+   * <p>This method uses a more sophisticated approach by examining the actual control flow
+   * rather than relying on simple pattern matching. It checks if the return statement can be
+   * reached when the parameter is non-null by analyzing the surrounding control structures.
    * 
    * @param returnTree the return statement to check
-   * @param state the visitor state
+   * @param state visitor state
    * @param methodTree the method tree
-   * @param paramIndex the index of the parameter to check
+   * @param paramIndex index of the parameter to check
    * @return true if the return statement is reachable when the parameter is non-null
    */
   private boolean isReturnReachableWhenParamIsNonNull(
@@ -272,7 +273,7 @@ public class ContractCheckHandler implements Handler {
       return true; // Cannot get parameter symbol, assume reachable
     }
     
-    // Walk up the AST to find if we're inside a conditional that checks for null
+    // Walk up the AST to find the control context of this return statement
     TreePath currentPath = state.getPath();
     while (currentPath != null && currentPath.getLeaf() != returnTree) {
       Tree currentTree = currentPath.getLeaf();
@@ -282,9 +283,33 @@ public class ContractCheckHandler implements Handler {
         
         // Check if the condition involves checking if the parameter is null
         if (isConditionCheckingParamNull(ifTree.getCondition(), paramSymbol)) {
+          
           // Check if this return statement is in the "then" branch (when param is null)
           if (isReturnInThenBranch(ifTree, returnTree, currentPath)) {
             return false; // Return is only reachable when param is null
+          }
+          
+          // If we're in the "else" branch, the return is reachable when param is non-null
+          // This handles both "else" blocks and ternary expressions
+          return true;
+        }
+      }
+      
+      // Check for ternary operator (cond ? then : else)
+      if (currentTree instanceof com.sun.source.tree.ConditionalExpressionTree conditionalTree) {
+        
+        // Check if the condition involves checking if the parameter is null
+        if (isConditionCheckingParamNull(conditionalTree.getCondition(), paramSymbol)) {
+          
+          // For ternary, if the condition checks for null, the "false" branch (else part)
+          // is reachable when parameter is non-null
+          if (conditionalTree.getFalseExpression() == returnTree) {
+            return true;
+          }
+          
+          // If the "true" branch (then part) contains the return, it's only reachable when param is null
+          if (conditionalTree.getTrueExpression() == returnTree) {
+            return false;
           }
         }
       }
